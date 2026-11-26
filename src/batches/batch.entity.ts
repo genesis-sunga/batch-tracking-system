@@ -22,6 +22,9 @@ export class Batch {
   @Column({ type: 'enum', enum: BatchStatus, default: BatchStatus.AWAITING_QA })
   status: BatchStatus;
 
+  @Column({ type: 'enum', enum: BatchStatus, nullable: true })
+  statusBeforeHold: BatchStatus | null;
+
   @Column({ nullable: true })
   currentLocationId: number | null;
 

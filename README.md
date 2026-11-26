@@ -17,21 +17,34 @@ Set `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD` in the environment (passw
 
 ## API outline
 
-All routes except login require `Authorization: Bearer <JWT>`.
+All routes except login require `Authorization: Bearer <JWT>`. List endpoints accept `page` (default 1), `limit` (default 20, maximum 100), and supported filter parameters; they return `{ "data": [], "meta": { "page": 1, "limit": 20, "total": 0, "totalPages": 0 } }`. Errors use `{ "statusCode", "error", "message", "path", "timestamp" }`.
 
 | Method | Route | Access |
 | --- | --- | --- |
 | POST | `/api/auth/login` | Public |
 | POST | `/api/users` | Admin |
-| POST / GET | `/api/locations` | Admin/warehouse operator to create; authenticated users to list |
-| POST / GET | `/api/purchase-orders` | Admin/procurement to create; authenticated users to list |
-| POST / GET | `/api/batches` | Admin/warehouse operator to create; authenticated users to list |
-| POST | `/api/batches/:id/transfer` | Admin/warehouse operator |
+| GET / POST | `/api/products` | Authenticated read; admin/procurement write |
+| GET / PATCH / DELETE | `/api/products/:id` | Admin/procurement update; admin delete |
+| GET | `/api/products/sku/:sku` | Authenticated |
+| GET / POST | `/api/suppliers` | Authenticated read; admin/procurement write |
+| GET / PATCH / DELETE | `/api/suppliers/:id` | Admin/procurement update; admin delete |
+| GET | `/api/suppliers/code/:code` | Authenticated |
+| GET / POST | `/api/purchase-orders` | Authenticated read; admin/procurement write |
+| GET / PATCH / DELETE | `/api/purchase-orders/:id` | Authenticated read; admin/procurement write |
+| GET | `/api/purchase-orders/reference/:reference` | Authenticated |
+| POST | `/api/purchase-orders/:id/receive` | Admin, procurement, warehouse operator |
+| GET / POST | `/api/locations` | Authenticated read; admin/warehouse operator create |
+| GET / POST | `/api/batches` | Authenticated read; admin/warehouse operator create |
+| GET | `/api/batches/:id` or `/api/batches/code/:code` | Authenticated |
+| POST | `/api/batches/:id/storage-movements` | Admin/warehouse operator |
+| GET | `/api/batches/:id/movements` | Authenticated |
 | POST | `/api/batches/:id/dispatch` | Admin/warehouse operator; batch must be released |
-| POST / GET | `/api/batches/:id/quality-tests` | Admin/QA inspector to record; authenticated users to list |
-| GET | `/api/batches/:id/trace` | Authenticated users |
-| GET | `/api/purchase-orders/:id/trace` | Authenticated users |
-| GET | `/api/locations/:id/batches` | Authenticated users |
+| POST / GET | `/api/batches/:id/quality-tests` | Admin/QA inspector to submit; authenticated users to list |
+| GET | `/api/batches/:id/trace` or `/api/batches/code/:code/trace` | Authenticated |
+| GET | `/api/purchase-orders/:id/trace` | Authenticated |
+| GET | `/api/locations/:id/batches` | Authenticated |
 | GET | `/api/audit-logs` | Admin (most recent 100 records) |
 
-Batch receipt, transfers, dispatches, quality results, status changes, and account creation use database transactions where appropriate and write audit records. A failing quality test quarantines a batch; enough passing tests (the batch's `requiredTests` count) release it. Batch creation also reserves against the purchase order quantity.
+Batch creation, PO receiving, storage movements, and dispatch require an `Idempotency-Key` header (1–128 characters). Reusing a key with the same request returns the original response; reusing it for different input returns `409 Conflict`. Receive bodies contain `batchNumber`, `locationId`, `quantity`, and optional `requiredTests`. Movement bodies use `movementType` values `transfer` (plus `toLocationId`), `consumption` (plus `quantity`), `hold`, or `release_hold`.
+
+Operations remain in services and use atomic TypeORM transactions. Receipt updates the PO's received quantity and creates the batch and movement together. Consumption cannot exceed available stock; only released stock can be consumed or dispatched. Quality `fail` quarantines a batch, `reject` marks it rejected, and passing the required distinct test types releases it. Master-data references cannot be deleted while used by purchase orders.

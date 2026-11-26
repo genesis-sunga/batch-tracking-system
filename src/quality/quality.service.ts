@@ -3,7 +3,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { AuditService } from '../common/audit/audit.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
+import { PaginatedResult, paginated } from '../common/dto/pagination.dto';
 import { BatchStatus, QualityOutcome } from '../common/enums';
+import { QualityTestQueryDto } from './dto/quality-test-query.dto';
 import { Batch } from '../batches/batch.entity';
 import { QualityTest } from './quality-test.entity';
 import { RecordQualityTestDto } from './dto/record-quality-test.dto';
@@ -30,6 +32,9 @@ export class QualityService {
       if (batch.status === BatchStatus.DISPATCHED) {
         throw new BadRequestException('Cannot record quality results for a dispatched batch');
       }
+      if ([BatchStatus.REJECTED, BatchStatus.ON_HOLD, BatchStatus.CONSUMED].includes(batch.status)) {
+        throw new BadRequestException('Batch status does not allow additional quality tests');
+      }
 
       const testRepository = manager.getRepository(QualityTest);
       const test = await testRepository.save(
@@ -42,13 +47,23 @@ export class QualityService {
         }),
       );
       const previousStatus = batch.status;
-      if (input.outcome === QualityOutcome.FAIL) {
+      if (input.outcome === QualityOutcome.REJECT) {
+        batch.status = BatchStatus.REJECTED;
+      } else if (input.outcome === QualityOutcome.FAIL) {
         batch.status = BatchStatus.QUARANTINED;
       } else {
-        const passedCount = await testRepository.count({
-          where: { batchId, outcome: QualityOutcome.PASS },
+        const tests = await testRepository.find({
+          where: { batchId },
+          order: { createdAt: 'DESC', id: 'DESC' },
         });
-        if (passedCount >= batch.requiredTests) {
+        const latestByType = new Map<string, QualityTest>();
+        for (const result of tests) {
+          if (!latestByType.has(result.testType)) latestByType.set(result.testType, result);
+        }
+        const hasRequiredPassingTests =
+          latestByType.size >= batch.requiredTests &&
+          [...latestByType.values()].every((result) => result.outcome === QualityOutcome.PASS);
+        if (hasRequiredPassingTests) {
           batch.status = BatchStatus.RELEASED;
         } else if (batch.status !== BatchStatus.QUARANTINED) {
           batch.status = BatchStatus.AWAITING_QA;
@@ -72,10 +87,22 @@ export class QualityService {
     });
   }
 
-  findForBatch(batchId: number): Promise<QualityTest[]> {
-    return this.qualityTests.find({
-      where: { batchId },
-      order: { createdAt: 'ASC' },
-    });
+  async findForBatch(
+    batchId: number,
+    query: QualityTestQueryDto,
+  ): Promise<PaginatedResult<QualityTest>> {
+    const builder = this.qualityTests
+      .createQueryBuilder('test')
+      .where('test.batchId = :batchId', { batchId });
+    if (query.outcome) builder.andWhere('test.outcome = :outcome', { outcome: query.outcome });
+    if (query.search) {
+      builder.andWhere('test.testType LIKE :search', { search: `%${query.search}%` });
+    }
+    const [data, total] = await builder
+      .orderBy('test.createdAt', 'ASC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getManyAndCount();
+    return paginated(data, total, query.page, query.limit);
   }
 }

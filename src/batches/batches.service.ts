@@ -1,22 +1,26 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { AuditService } from '../common/audit/audit.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
-import { BatchStatus } from '../common/enums';
+import { PaginatedResult, paginated } from '../common/dto/pagination.dto';
+import { BatchStatus, MovementType, PurchaseOrderStatus } from '../common/enums';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { Location } from '../locations/location.entity';
 import { PurchaseOrder } from '../purchase-orders/purchase-order.entity';
 import { QualityTest } from '../quality/quality-test.entity';
 import { CreateBatchDto } from './dto/create-batch.dto';
 import { MoveBatchDto } from './dto/move-batch.dto';
+import { BatchQueryDto } from './dto/batch-query.dto';
+import { MovementQueryDto } from './dto/movement-query.dto';
 import { Batch } from './batch.entity';
 import { InventoryMovement } from './inventory-movement.entity';
 
 @Injectable()
 export class BatchesService {
   constructor(
-    private readonly dataSource: DataSource,
     private readonly audit: AuditService,
+    private readonly idempotency: IdempotencyService,
     @InjectRepository(Batch) private readonly batches: Repository<Batch>,
     @InjectRepository(InventoryMovement)
     private readonly movements: Repository<InventoryMovement>,
@@ -27,133 +31,291 @@ export class BatchesService {
     private readonly qualityTests: Repository<QualityTest>,
   ) {}
 
-  async create(input: CreateBatchDto, actor: AuthenticatedUser): Promise<Batch> {
-    return this.dataSource.transaction(async (manager) => {
-      const purchaseOrder = await manager
-        .getRepository(PurchaseOrder)
-        .findOne({ where: { id: input.purchaseOrderId }, lock: { mode: 'pessimistic_write' } });
-      if (!purchaseOrder) throw new NotFoundException('Purchase order not found');
+  create(input: CreateBatchDto, actor: AuthenticatedUser, key?: string): Promise<Batch> {
+    return this.idempotency.execute(
+      `receive-po-${input.purchaseOrderId}`,
+      key,
+      { actorId: actor.id, payload: input },
+      (manager) => this.createBatchInTransaction(manager, input, actor),
+    );
+  }
 
-      const location = await manager.getRepository(Location).findOneBy({ id: input.locationId });
-      if (!location || !location.active) throw new NotFoundException('Active location not found');
+  receive(
+    purchaseOrderId: number,
+    input: Omit<CreateBatchDto, 'purchaseOrderId'>,
+    actor: AuthenticatedUser,
+    key?: string,
+  ): Promise<Batch> {
+    const payload = { ...input, purchaseOrderId };
+    return this.idempotency.execute(
+      `receive-po-${purchaseOrderId}`,
+      key,
+      { actorId: actor.id, payload },
+      (manager) => this.createBatchInTransaction(manager, payload, actor),
+    );
+  }
 
-      const batchRepository = manager.getRepository(Batch);
-      const alreadyAllocated = await batchRepository
-        .createQueryBuilder('batch')
-        .select('COALESCE(SUM(batch.quantity), 0)', 'quantity')
-        .where('batch.purchaseOrderId = :purchaseOrderId', {
-          purchaseOrderId: purchaseOrder.id,
-        })
-        .getRawOne<{ quantity: string }>();
-      if (Number(alreadyAllocated?.quantity ?? 0) + input.quantity > purchaseOrder.quantity) {
-        throw new BadRequestException('Batch quantity exceeds the remaining purchase order quantity');
-      }
+  private async createBatchInTransaction(
+    manager: EntityManager,
+    input: CreateBatchDto,
+    actor: AuthenticatedUser,
+  ): Promise<Batch> {
+    const purchaseOrderRepository = manager.getRepository(PurchaseOrder);
+    const purchaseOrder = await purchaseOrderRepository.findOne({
+      where: { id: input.purchaseOrderId },
+      lock: { mode: 'pessimistic_write' },
+    });
+    if (!purchaseOrder) throw new NotFoundException('Purchase order not found');
+    if (
+      purchaseOrder.status === PurchaseOrderStatus.CANCELLED ||
+      purchaseOrder.receivedQuantity + input.quantity > purchaseOrder.quantity
+    ) {
+      throw new BadRequestException('Purchase order cannot receive this quantity');
+    }
 
-      const batch = await batchRepository.save(
-        batchRepository.create({
-          batchNumber: input.batchNumber,
-          purchaseOrderId: purchaseOrder.id,
-          quantity: input.quantity,
-          requiredTests: input.requiredTests,
-          status: BatchStatus.AWAITING_QA,
-          currentLocationId: location.id,
-        }),
-      );
-      await manager.getRepository(InventoryMovement).insert({
-        batchId: batch.id,
-        fromLocationId: null,
-        toLocationId: location.id,
-        quantity: batch.quantity,
-        movementType: 'receipt',
-        actorId: actor.id,
-      });
-      await this.audit.record(manager, actor, 'batch_created', 'batch', batch.id, {
+    const location = await manager.getRepository(Location).findOneBy({ id: input.locationId });
+    if (!location || !location.active) throw new NotFoundException('Active location not found');
+    const batchRepository = manager.getRepository(Batch);
+    const batch = await batchRepository.save(
+      batchRepository.create({
+        batchNumber: input.batchNumber,
         purchaseOrderId: purchaseOrder.id,
-        locationId: location.id,
-        quantity: batch.quantity,
-      });
-      return batch;
+        quantity: input.quantity,
+        requiredTests: input.requiredTests,
+        status: BatchStatus.AWAITING_QA,
+        currentLocationId: location.id,
+      }),
+    );
+    purchaseOrder.receivedQuantity += input.quantity;
+    purchaseOrder.status =
+      purchaseOrder.receivedQuantity === purchaseOrder.quantity
+        ? PurchaseOrderStatus.RECEIVED
+        : PurchaseOrderStatus.PARTIALLY_RECEIVED;
+    await purchaseOrderRepository.save(purchaseOrder);
+    await manager.getRepository(InventoryMovement).insert({
+      batchId: batch.id,
+      fromLocationId: null,
+      toLocationId: location.id,
+      quantity: batch.quantity,
+      movementType: MovementType.RECEIPT,
+      actorId: actor.id,
     });
-  }
-
-  async transfer(id: number, input: MoveBatchDto, actor: AuthenticatedUser): Promise<Batch> {
-    return this.dataSource.transaction(async (manager) => {
-      const batch = await manager
-        .getRepository(Batch)
-        .findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
-      if (!batch) throw new NotFoundException('Batch not found');
-      if (batch.status === BatchStatus.DISPATCHED) {
-        throw new BadRequestException('A dispatched batch cannot be moved');
-      }
-      const destination = await manager
-        .getRepository(Location)
-        .findOneBy({ id: input.toLocationId, active: true });
-      if (!destination) throw new NotFoundException('Active destination location not found');
-      if (batch.currentLocationId === destination.id) {
-        throw new BadRequestException('Batch is already at this location');
-      }
-
-      const fromLocationId = batch.currentLocationId;
-      await manager.getRepository(InventoryMovement).insert({
-        batchId: batch.id,
-        fromLocationId,
-        toLocationId: destination.id,
-        quantity: batch.quantity,
-        movementType: 'transfer',
-        actorId: actor.id,
-      });
-      batch.currentLocationId = destination.id;
-      const updated = await manager.getRepository(Batch).save(batch);
-      await this.audit.record(manager, actor, 'batch_transferred', 'batch', batch.id, {
-        fromLocationId,
-        toLocationId: destination.id,
-      });
-      return updated;
+    await this.audit.record(manager, actor, 'purchase_order_received', 'batch', batch.id, {
+      purchaseOrderId: purchaseOrder.id,
+      locationId: location.id,
+      quantity: batch.quantity,
     });
+    return batch;
   }
 
-  async dispatch(id: number, actor: AuthenticatedUser): Promise<Batch> {
-    return this.dataSource.transaction(async (manager) => {
-      const batch = await manager
-        .getRepository(Batch)
-        .findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
-      if (!batch) throw new NotFoundException('Batch not found');
-      if (batch.status !== BatchStatus.RELEASED) {
-        throw new BadRequestException('Only quality-released batches may be dispatched');
+  move(
+    id: number,
+    input: MoveBatchDto,
+    actor: AuthenticatedUser,
+    key?: string,
+  ): Promise<Batch> {
+    return this.idempotency.execute(
+      `batch-movement-${id}`,
+      key,
+      { actorId: actor.id, payload: input },
+      (manager) => this.applyMovement(manager, id, input, actor),
+    );
+  }
+
+  private async applyMovement(
+    manager: EntityManager,
+    id: number,
+    input: MoveBatchDto,
+    actor: AuthenticatedUser,
+  ): Promise<Batch> {
+    const repository = manager.getRepository(Batch);
+    const batch = await repository.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+    if (!batch) throw new NotFoundException('Batch not found');
+
+    const terminalStatuses = [BatchStatus.DISPATCHED, BatchStatus.REJECTED, BatchStatus.CONSUMED];
+    if (terminalStatuses.includes(batch.status)) {
+      throw new BadRequestException('This batch no longer supports inventory movements');
+    }
+
+    const movementRepository = manager.getRepository(InventoryMovement);
+    const fromLocationId = batch.currentLocationId;
+    let quantity = batch.quantity;
+    let toLocationId: number | null = fromLocationId;
+
+    switch (input.movementType) {
+      case MovementType.TRANSFER: {
+        if (input.quantity !== undefined || input.toLocationId === undefined) {
+          throw new BadRequestException('Transfers require only a destination location');
+        }
+        if ([BatchStatus.ON_HOLD, BatchStatus.QUARANTINED].includes(batch.status)) {
+          throw new BadRequestException('Held or quarantined batches cannot be transferred');
+        }
+        const destination = await manager.getRepository(Location).findOneBy({
+          id: input.toLocationId,
+          active: true,
+        });
+        if (!destination) throw new NotFoundException('Active destination location not found');
+        if (batch.currentLocationId === destination.id) {
+          throw new BadRequestException('Batch is already at this location');
+        }
+        toLocationId = destination.id;
+        batch.currentLocationId = destination.id;
+        break;
       }
-      const fromLocationId = batch.currentLocationId;
-      await manager.getRepository(InventoryMovement).insert({
-        batchId: batch.id,
-        fromLocationId,
-        toLocationId: null,
-        quantity: batch.quantity,
-        movementType: 'dispatch',
-        actorId: actor.id,
-      });
-      batch.status = BatchStatus.DISPATCHED;
-      batch.currentLocationId = null;
-      const updated = await manager.getRepository(Batch).save(batch);
-      await this.audit.record(manager, actor, 'batch_dispatched', 'batch', batch.id, {
-        fromLocationId,
-        quantity: batch.quantity,
-      });
-      return updated;
+      case MovementType.CONSUMPTION:
+        if (input.toLocationId !== undefined || input.quantity === undefined) {
+          throw new BadRequestException('Consumption requires only a quantity');
+        }
+        if (batch.status !== BatchStatus.RELEASED) {
+          throw new BadRequestException('Only released batches may be consumed');
+        }
+        if (input.quantity > batch.quantity) {
+          throw new BadRequestException('Consumption quantity exceeds available batch stock');
+        }
+        quantity = input.quantity;
+        batch.quantity -= quantity;
+        if (batch.quantity === 0) {
+          batch.currentLocationId = null;
+          batch.status = BatchStatus.CONSUMED;
+          toLocationId = null;
+        }
+        break;
+      case MovementType.HOLD:
+        if (input.toLocationId !== undefined || input.quantity !== undefined) {
+          throw new BadRequestException('Hold does not accept a location or quantity');
+        }
+        if ([BatchStatus.ON_HOLD, BatchStatus.QUARANTINED].includes(batch.status)) {
+          throw new BadRequestException('Batch is already held or quarantined');
+        }
+        batch.statusBeforeHold = batch.status;
+        batch.status = BatchStatus.ON_HOLD;
+        break;
+      case MovementType.RELEASE_HOLD:
+        if (input.toLocationId !== undefined || input.quantity !== undefined) {
+          throw new BadRequestException('Releasing a hold does not accept a location or quantity');
+        }
+        if (batch.status !== BatchStatus.ON_HOLD) {
+          throw new BadRequestException('Batch is not on hold');
+        }
+        batch.status = batch.statusBeforeHold ?? BatchStatus.AWAITING_QA;
+        batch.statusBeforeHold = null;
+        break;
+      default:
+        throw new BadRequestException('Unsupported inventory movement');
+    }
+
+    await movementRepository.insert({
+      batchId: batch.id,
+      fromLocationId,
+      toLocationId,
+      quantity,
+      movementType: input.movementType,
+      actorId: actor.id,
     });
+    const updated = await repository.save(batch);
+    await this.audit.record(manager, actor, `batch_${input.movementType}`, 'batch', id, {
+      quantity,
+      fromLocationId,
+      toLocationId,
+      status: updated.status,
+    });
+    return updated;
   }
 
-  findAll(): Promise<Batch[]> {
-    return this.batches.find({ order: { createdAt: 'DESC' } });
+  async dispatch(id: number, actor: AuthenticatedUser, key?: string): Promise<Batch> {
+    return this.idempotency.execute(
+      `batch-dispatch-${id}`,
+      key,
+      { actorId: actor.id, batchId: id },
+      async (manager) => {
+        const batch = await manager
+          .getRepository(Batch)
+          .findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+        if (!batch) throw new NotFoundException('Batch not found');
+        if (batch.status !== BatchStatus.RELEASED) {
+          throw new BadRequestException('Only quality-released batches may be dispatched');
+        }
+        const fromLocationId = batch.currentLocationId;
+        await manager.getRepository(InventoryMovement).insert({
+          batchId: batch.id,
+          fromLocationId,
+          toLocationId: null,
+          quantity: batch.quantity,
+          movementType: MovementType.DISPATCH,
+          actorId: actor.id,
+        });
+        batch.status = BatchStatus.DISPATCHED;
+        batch.currentLocationId = null;
+        const updated = await manager.getRepository(Batch).save(batch);
+        await this.audit.record(manager, actor, 'batch_dispatched', 'batch', batch.id, {
+          fromLocationId,
+          quantity: batch.quantity,
+        });
+        return updated;
+      },
+    );
   }
 
-  async findAtLocation(locationId: number): Promise<Batch[]> {
-    return this.batches.find({ where: { currentLocationId: locationId } });
+  async findAll(query: BatchQueryDto): Promise<PaginatedResult<Batch>> {
+    const builder = this.batches.createQueryBuilder('batch').where('1 = 1');
+    if (query.search) {
+      builder.andWhere('batch.batchNumber LIKE :search', { search: `%${query.search}%` });
+    }
+    if (query.status) builder.andWhere('batch.status = :status', { status: query.status });
+    if (query.locationId) builder.andWhere('batch.currentLocationId = :locationId', { locationId: query.locationId });
+    if (query.purchaseOrderId) {
+      builder.andWhere('batch.purchaseOrderId = :purchaseOrderId', { purchaseOrderId: query.purchaseOrderId });
+    }
+    const [data, total] = await builder
+      .orderBy('batch.createdAt', 'DESC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getManyAndCount();
+    return paginated(data, total, query.page, query.limit);
+  }
+
+  async findAtLocation(locationId: number, query: BatchQueryDto): Promise<PaginatedResult<Batch>> {
+    const builder = this.batches
+      .createQueryBuilder('batch')
+      .where('batch.currentLocationId = :locationId', { locationId })
+      .andWhere('batch.quantity > 0');
+    if (query.status) builder.andWhere('batch.status = :status', { status: query.status });
+    if (query.search) {
+      builder.andWhere('batch.batchNumber LIKE :search', { search: `%${query.search}%` });
+    }
+    if (query.purchaseOrderId) {
+      builder.andWhere('batch.purchaseOrderId = :purchaseOrderId', {
+        purchaseOrderId: query.purchaseOrderId,
+      });
+    }
+    const [data, total] = await builder
+      .orderBy('batch.createdAt', 'DESC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getManyAndCount();
+    return paginated(data, total, query.page, query.limit);
+  }
+
+  async findOne(id: number): Promise<Batch> {
+    const batch = await this.batches.findOneBy({ id });
+    if (!batch) throw new NotFoundException('Batch not found');
+    return batch;
+  }
+
+  async findByCode(batchNumber: string): Promise<Batch> {
+    const batch = await this.batches.findOneBy({ batchNumber });
+    if (!batch) throw new NotFoundException('Batch not found');
+    return batch;
   }
 
   async traceBatch(id: number): Promise<Record<string, unknown>> {
     const batch = await this.batches.findOneBy({ id });
     if (!batch) throw new NotFoundException('Batch not found');
     const [purchaseOrder, qualityTests, movements] = await Promise.all([
-      this.purchaseOrders.findOneBy({ id: batch.purchaseOrderId }),
+      this.purchaseOrders.findOne({
+        where: { id: batch.purchaseOrderId },
+        relations: { supplier: true, product: true },
+      }),
       this.qualityTests.find({ where: { batchId: id }, order: { createdAt: 'ASC' } }),
       this.movements.find({ where: { batchId: id }, order: { createdAt: 'ASC' } }),
     ]);
@@ -168,8 +330,41 @@ export class BatchesService {
     };
   }
 
+  async traceBatchByCode(batchNumber: string): Promise<Record<string, unknown>> {
+    const batch = await this.batches.findOneBy({ batchNumber });
+    if (!batch) throw new NotFoundException('Batch not found');
+    return this.traceBatch(batch.id);
+  }
+
+  async findMovements(
+    id: number,
+    query: MovementQueryDto,
+  ): Promise<PaginatedResult<InventoryMovement>> {
+    if (!(await this.batches.existsBy({ id }))) throw new NotFoundException('Batch not found');
+    const builder = this.movements
+      .createQueryBuilder('movement')
+      .where('movement.batchId = :id', { id });
+    if (query.movementType) {
+      builder.andWhere('movement.movementType = :movementType', {
+        movementType: query.movementType,
+      });
+    }
+    if (query.search) {
+      builder.andWhere('movement.movementType LIKE :search', { search: `%${query.search}%` });
+    }
+    const [data, total] = await builder
+      .orderBy('movement.createdAt', 'ASC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getManyAndCount();
+    return paginated(data, total, query.page, query.limit);
+  }
+
   async tracePurchaseOrder(id: number): Promise<Record<string, unknown>> {
-    const purchaseOrder = await this.purchaseOrders.findOneBy({ id });
+    const purchaseOrder = await this.purchaseOrders.findOne({
+      where: { id },
+      relations: { supplier: true, product: true },
+    });
     if (!purchaseOrder) throw new NotFoundException('Purchase order not found');
     const batches = await this.batches.find({
       where: { purchaseOrderId: id },

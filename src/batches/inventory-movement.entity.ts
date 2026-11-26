@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import { MovementType } from '../common/enums';
 
 @Entity('inventory_movements')
 @Index(['batchId', 'createdAt'])
@@ -18,8 +19,8 @@ export class InventoryMovement {
   @Column({ type: 'int', unsigned: true })
   quantity: number;
 
-  @Column({ length: 30 })
-  movementType: string;
+  @Column({ type: 'enum', enum: MovementType })
+  movementType: MovementType;
 
   @Column()
   actorId: number;

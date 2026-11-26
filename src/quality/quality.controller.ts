@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '../common/enums';
@@ -8,6 +8,7 @@ import { Batch } from '../batches/batch.entity';
 import { QualityTest } from './quality-test.entity';
 import { QualityService } from './quality.service';
 import { RecordQualityTestDto } from './dto/record-quality-test.dto';
+import { QualityTestQueryDto } from './dto/quality-test-query.dto';
 
 @Controller('batches/:id/quality-tests')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -25,7 +26,10 @@ export class QualityController {
   }
 
   @Get()
-  findForBatch(@Param('id', ParseIntPipe) id: number): Promise<QualityTest[]> {
-    return this.quality.findForBatch(id);
+  findForBatch(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: QualityTestQueryDto,
+  ) {
+    return this.quality.findForBatch(id, query);
   }
 }

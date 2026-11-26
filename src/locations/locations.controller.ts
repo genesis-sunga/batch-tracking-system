@@ -1,9 +1,10 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser, AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UserRole } from '../common/enums';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { CreateLocationDto } from './dto/create-location.dto';
 import { Location } from './location.entity';
 import { LocationsService } from './locations.service';
@@ -23,7 +24,7 @@ export class LocationsController {
   }
 
   @Get()
-  findAll(): Promise<Location[]> {
-    return this.locations.findAll();
+  findAll(@Query() query: PaginationDto) {
+    return this.locations.findAll(query);
   }
 }

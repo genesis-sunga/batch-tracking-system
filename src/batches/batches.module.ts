@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditModule } from '../common/audit/audit.module';
+import { IdempotencyModule } from '../common/idempotency/idempotency.module';
 import { Location } from '../locations/location.entity';
 import { PurchaseOrder } from '../purchase-orders/purchase-order.entity';
 import { QualityTest } from '../quality/quality-test.entity';
@@ -13,6 +14,7 @@ import { InventoryMovement } from './inventory-movement.entity';
   imports: [
     TypeOrmModule.forFeature([Batch, InventoryMovement, PurchaseOrder, Location, QualityTest]),
     AuditModule,
+    IdempotencyModule,
   ],
   controllers: [BatchesController],
   providers: [BatchesService],

@@ -6,10 +6,13 @@ export class CreatePurchaseOrderDto {
   @MaxLength(100)
   reference: string;
 
-  @IsString()
-  @MinLength(1)
-  @MaxLength(255)
-  supplier: string;
+  @IsInt()
+  @Min(1)
+  supplierId: number;
+
+  @IsInt()
+  @Min(1)
+  productId: number;
 
   @IsInt()
   @Min(1)

@@ -11,9 +11,28 @@ export enum BatchStatus {
   ON_HOLD = 'on_hold',
   QUARANTINED = 'quarantined',
   DISPATCHED = 'dispatched',
+  REJECTED = 'rejected',
+  CONSUMED = 'consumed',
 }
 
 export enum QualityOutcome {
   PASS = 'pass',
   FAIL = 'fail',
+  REJECT = 'reject',
+}
+
+export enum MovementType {
+  RECEIPT = 'receipt',
+  TRANSFER = 'transfer',
+  CONSUMPTION = 'consumption',
+  HOLD = 'hold',
+  RELEASE_HOLD = 'release_hold',
+  DISPATCH = 'dispatch',
+}
+
+export enum PurchaseOrderStatus {
+  OPEN = 'open',
+  PARTIALLY_RECEIVED = 'partially_received',
+  RECEIVED = 'received',
+  CANCELLED = 'cancelled',
 }
