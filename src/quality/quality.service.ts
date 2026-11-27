@@ -4,12 +4,13 @@ import { DataSource, Repository } from 'typeorm';
 import { AuditService } from '../common/audit/audit.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { PaginatedResult, paginated } from '../common/dto/pagination.dto';
-import { BatchStatus, QualityOutcome } from '../common/enums';
+import { BatchStatus, QualityOutcome, UserRole } from '../common/enums';
 import { QualityTestQueryDto } from './dto/quality-test-query.dto';
 import { Batch } from '../batches/batch.entity';
 import { QualityTest } from './quality-test.entity';
 import { RecordQualityTestDto } from './dto/record-quality-test.dto';
 import { IntegrationsService } from '../integrations/integrations.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class QualityService {
@@ -17,6 +18,7 @@ export class QualityService {
     private readonly dataSource: DataSource,
     private readonly audit: AuditService,
     private readonly integrations: IntegrationsService,
+    private readonly notifications: NotificationsService,
     @InjectRepository(QualityTest)
     private readonly qualityTests: Repository<QualityTest>,
   ) {}
@@ -84,6 +86,48 @@ export class QualityService {
         await this.audit.record(manager, actor, 'quarantined_batch_released', 'batch', batchId, {
           testId: test.id,
         });
+      }
+      if (input.outcome !== QualityOutcome.PASS) {
+        await this.notifications.notifyRoles(
+          manager,
+          [UserRole.ADMIN, UserRole.QA_INSPECTOR, UserRole.WAREHOUSE_OPERATOR],
+          'quality_failed',
+          {
+            batchNumber: updatedBatch.batchNumber,
+            testType: test.testType,
+            outcome: test.outcome,
+            status: updatedBatch.status,
+            notes: test.notes,
+          },
+          `quality-test:${test.id}`,
+        );
+      }
+      if (previousStatus !== BatchStatus.RELEASED && updatedBatch.status === BatchStatus.RELEASED) {
+        await this.notifications.notifyRoles(
+          manager,
+          [UserRole.ADMIN, UserRole.PROCUREMENT, UserRole.WAREHOUSE_OPERATOR],
+          'batch_released',
+          {
+            batchNumber: updatedBatch.batchNumber,
+            quantity: updatedBatch.quantity,
+            status: updatedBatch.status,
+          },
+          `batch-released:${updatedBatch.id}:${test.id}`,
+        );
+      }
+      if (updatedBatch.status === BatchStatus.REJECTED && previousStatus !== BatchStatus.REJECTED) {
+        await this.notifications.notifyRoles(
+          manager,
+          [UserRole.ADMIN, UserRole.PROCUREMENT, UserRole.QA_INSPECTOR, UserRole.WAREHOUSE_OPERATOR],
+          'batch_recalled',
+          {
+            batchNumber: updatedBatch.batchNumber,
+            quantity: updatedBatch.quantity,
+            testType: test.testType,
+            status: updatedBatch.status,
+          },
+          `batch-recalled:${updatedBatch.id}:${test.id}`,
+        );
       }
       await this.integrations.enqueue(manager, 'quality.test_recorded', {
         batchId,

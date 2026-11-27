@@ -1,4 +1,4 @@
-import { IsInt, IsString, MaxLength, Min, MinLength } from 'class-validator';
+import { IsDateString, IsInt, IsOptional, IsString, MaxLength, Min, MinLength } from 'class-validator';
 
 export class ReceiveBatchDto {
   @IsString()
@@ -17,4 +17,8 @@ export class ReceiveBatchDto {
   @IsInt()
   @Min(1)
   requiredTests = 1;
+
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
 }

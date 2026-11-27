@@ -4,7 +4,7 @@ import { EntityManager, Repository } from 'typeorm';
 import { AuditService } from '../common/audit/audit.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { PaginatedResult, paginated } from '../common/dto/pagination.dto';
-import { BatchStatus, MovementType, PurchaseOrderStatus } from '../common/enums';
+import { BatchStatus, MovementType, PurchaseOrderStatus, UserRole } from '../common/enums';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { Location } from '../locations/location.entity';
 import { PurchaseOrder } from '../purchase-orders/purchase-order.entity';
@@ -16,12 +16,14 @@ import { MovementQueryDto } from './dto/movement-query.dto';
 import { Batch } from './batch.entity';
 import { InventoryMovement } from './inventory-movement.entity';
 import { IntegrationsService } from '../integrations/integrations.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class BatchesService {
   constructor(
     private readonly audit: AuditService,
     private readonly integrations: IntegrationsService,
+    private readonly notifications: NotificationsService,
     private readonly idempotency: IdempotencyService,
     @InjectRepository(Batch) private readonly batches: Repository<Batch>,
     @InjectRepository(InventoryMovement)
@@ -85,6 +87,7 @@ export class BatchesService {
         purchaseOrderId: purchaseOrder.id,
         quantity: input.quantity,
         requiredTests: input.requiredTests,
+        expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
         status: BatchStatus.AWAITING_QA,
         currentLocationId: location.id,
       }),
@@ -108,6 +111,19 @@ export class BatchesService {
       locationId: location.id,
       quantity: batch.quantity,
     });
+    await this.notifications.notifyRoles(
+      manager,
+      [UserRole.ADMIN, UserRole.PROCUREMENT],
+      'purchase_order_received',
+      {
+        reference: purchaseOrder.reference,
+        batchNumber: batch.batchNumber,
+        quantity: batch.quantity,
+        receivedQuantity: purchaseOrder.receivedQuantity,
+        status: purchaseOrder.status,
+      },
+      `purchase-order-received:${batch.id}`,
+    );
     await this.integrations.enqueue(manager, 'shipment.received', {
       batchId: batch.id,
       batchNumber: batch.batchNumber,
@@ -239,6 +255,20 @@ export class BatchesService {
       toLocationId,
       status: updated.status,
     });
+    if (input.movementType === MovementType.HOLD) {
+      await this.notifications.notifyRoles(
+        manager,
+        [UserRole.ADMIN, UserRole.QA_INSPECTOR, UserRole.WAREHOUSE_OPERATOR],
+        'batch_on_hold',
+        {
+          batchNumber: updated.batchNumber,
+          quantity: updated.quantity,
+          status: updated.status,
+          locationId: updated.currentLocationId,
+        },
+        `batch-hold:${updated.id}:${updated.updatedAt.toISOString()}`,
+      );
+    }
     return updated;
   }
 

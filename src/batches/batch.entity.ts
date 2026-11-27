@@ -3,6 +3,8 @@ import { BatchStatus } from '../common/enums';
 
 @Entity('batches')
 @Index(['batchNumber'], { unique: true })
+@Index('IDX_batches_expiry', ['expiresAt'])
+@Index('IDX_batches_quarantine_reminder', ['status', 'updatedAt'])
 export class Batch {
   @PrimaryGeneratedColumn()
   id: number;
@@ -27,6 +29,9 @@ export class Batch {
 
   @Column({ nullable: true })
   currentLocationId: number | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  expiresAt: Date | null;
 
   @CreateDateColumn()
   createdAt: Date;

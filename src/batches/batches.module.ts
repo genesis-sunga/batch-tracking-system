@@ -9,6 +9,7 @@ import { Batch } from './batch.entity';
 import { BatchesController } from './batches.controller';
 import { BatchesService } from './batches.service';
 import { IntegrationsModule } from '../integrations/integrations.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { InventoryMovement } from './inventory-movement.entity';
 
 @Module({
@@ -16,6 +17,7 @@ import { InventoryMovement } from './inventory-movement.entity';
     TypeOrmModule.forFeature([Batch, InventoryMovement, PurchaseOrder, Location, QualityTest]),
     AuditModule,
     IntegrationsModule,
+    NotificationsModule,
     IdempotencyModule,
   ],
   controllers: [BatchesController],
