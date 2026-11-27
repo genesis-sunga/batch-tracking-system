@@ -10,6 +10,7 @@ import { QualityModule } from './quality/quality.module';
 import { UsersModule } from './users/users.module';
 import { ProductsModule } from './products/products.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
+import { IntegrationsModule } from './integrations/integrations.module';
 
 @Module({
   imports: [
@@ -25,6 +26,8 @@ import { SuppliersModule } from './suppliers/suppliers.module';
         database: config.getOrThrow<string>('DB_DATABASE'),
         autoLoadEntities: true,
         synchronize: config.get<string>('NODE_ENV') !== 'production',
+        migrations: [__dirname + '/integrations/migrations/*{.js,.ts}'],
+        migrationsRun: config.get<string>('DB_MIGRATIONS_RUN') === 'true',
       }),
     }),
     AuditModule,
@@ -36,6 +39,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     UsersModule,
     ProductsModule,
     SuppliersModule,
+    IntegrationsModule,
   ],
 })
 export class AppModule {}

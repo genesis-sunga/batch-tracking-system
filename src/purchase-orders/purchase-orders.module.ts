@@ -5,11 +5,16 @@ import { Batch } from '../batches/batch.entity';
 import { Product } from '../products/product.entity';
 import { Supplier } from '../suppliers/supplier.entity';
 import { PurchaseOrder } from './purchase-order.entity';
+import { IntegrationsModule } from '../integrations/integrations.module';
 import { PurchaseOrdersController } from './purchase-orders.controller';
 import { PurchaseOrdersService } from './purchase-orders.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([PurchaseOrder, Batch, Product, Supplier]), AuditModule],
+  imports: [
+    TypeOrmModule.forFeature([PurchaseOrder, Batch, Product, Supplier]),
+    AuditModule,
+    IntegrationsModule,
+  ],
   controllers: [PurchaseOrdersController],
   providers: [PurchaseOrdersService],
   exports: [TypeOrmModule],

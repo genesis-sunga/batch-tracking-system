@@ -12,12 +12,14 @@ import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { PurchaseOrderQueryDto } from './dto/purchase-order-query.dto';
 import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { PurchaseOrder } from './purchase-order.entity';
+import { IntegrationsService } from '../integrations/integrations.service';
 
 @Injectable()
 export class PurchaseOrdersService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly audit: AuditService,
+    private readonly integrations: IntegrationsService,
     @InjectRepository(PurchaseOrder)
     private readonly purchaseOrders: Repository<PurchaseOrder>,
   ) {}
@@ -35,6 +37,14 @@ export class PurchaseOrdersService {
       await this.audit.record(manager, actor, 'purchase_order_created', 'purchase_order', order.id, {
         reference: order.reference,
         quantity: order.quantity,
+      });
+      await this.integrations.enqueue(manager, 'purchase_order.created', {
+        id: order.id,
+        reference: order.reference,
+        supplierId: order.supplierId,
+        productId: order.productId,
+        quantity: order.quantity,
+        status: order.status,
       });
       return order;
     });
@@ -91,6 +101,7 @@ export class PurchaseOrdersService {
       if (purchaseOrder.receivedQuantity > 0) {
         throw new ConflictException('A purchase order cannot be edited after receiving has started');
       }
+      const previousStatus = purchaseOrder.status;
       if (input.supplierId) {
         const supplier = await manager.getRepository(Supplier).findOneBy({ id: input.supplierId });
         if (!supplier || !supplier.active) throw new NotFoundException('Active supplier not found');
@@ -104,6 +115,14 @@ export class PurchaseOrdersService {
       await this.audit.record(manager, actor, 'purchase_order_updated', 'purchase_order', id, {
         ...input,
       });
+      if (updated.status !== previousStatus) {
+        await this.integrations.enqueue(manager, 'purchase_order.status_changed', {
+          id: updated.id,
+          reference: updated.reference,
+          previousStatus,
+          status: updated.status,
+        });
+      }
       return updated;
     });
   }

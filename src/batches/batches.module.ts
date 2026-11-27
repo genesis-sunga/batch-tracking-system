@@ -8,12 +8,14 @@ import { QualityTest } from '../quality/quality-test.entity';
 import { Batch } from './batch.entity';
 import { BatchesController } from './batches.controller';
 import { BatchesService } from './batches.service';
+import { IntegrationsModule } from '../integrations/integrations.module';
 import { InventoryMovement } from './inventory-movement.entity';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Batch, InventoryMovement, PurchaseOrder, Location, QualityTest]),
     AuditModule,
+    IntegrationsModule,
     IdempotencyModule,
   ],
   controllers: [BatchesController],

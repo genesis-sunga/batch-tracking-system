@@ -9,12 +9,14 @@ import { QualityTestQueryDto } from './dto/quality-test-query.dto';
 import { Batch } from '../batches/batch.entity';
 import { QualityTest } from './quality-test.entity';
 import { RecordQualityTestDto } from './dto/record-quality-test.dto';
+import { IntegrationsService } from '../integrations/integrations.service';
 
 @Injectable()
 export class QualityService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly audit: AuditService,
+    private readonly integrations: IntegrationsService,
     @InjectRepository(QualityTest)
     private readonly qualityTests: Repository<QualityTest>,
   ) {}
@@ -81,6 +83,27 @@ export class QualityService {
       if (previousStatus === BatchStatus.QUARANTINED && updatedBatch.status === BatchStatus.RELEASED) {
         await this.audit.record(manager, actor, 'quarantined_batch_released', 'batch', batchId, {
           testId: test.id,
+        });
+      }
+      await this.integrations.enqueue(manager, 'quality.test_recorded', {
+        batchId,
+        testId: test.id,
+        testType: test.testType,
+        outcome: test.outcome,
+        status: updatedBatch.status,
+      });
+      if (updatedBatch.status !== previousStatus) {
+        const eventType =
+          updatedBatch.status === BatchStatus.RELEASED
+            ? 'batch.released'
+            : updatedBatch.status === BatchStatus.REJECTED
+              ? 'batch.recalled'
+              : 'batch.quarantined';
+        await this.integrations.enqueue(manager, eventType, {
+          batchId,
+          testId: test.id,
+          previousStatus,
+          status: updatedBatch.status,
         });
       }
       return { test, batch: updatedBatch };

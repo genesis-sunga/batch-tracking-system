@@ -15,11 +15,13 @@ import { BatchQueryDto } from './dto/batch-query.dto';
 import { MovementQueryDto } from './dto/movement-query.dto';
 import { Batch } from './batch.entity';
 import { InventoryMovement } from './inventory-movement.entity';
+import { IntegrationsService } from '../integrations/integrations.service';
 
 @Injectable()
 export class BatchesService {
   constructor(
     private readonly audit: AuditService,
+    private readonly integrations: IntegrationsService,
     private readonly idempotency: IdempotencyService,
     @InjectRepository(Batch) private readonly batches: Repository<Batch>,
     @InjectRepository(InventoryMovement)
@@ -72,6 +74,7 @@ export class BatchesService {
     ) {
       throw new BadRequestException('Purchase order cannot receive this quantity');
     }
+    const previousPurchaseOrderStatus = purchaseOrder.status;
 
     const location = await manager.getRepository(Location).findOneBy({ id: input.locationId });
     if (!location || !location.active) throw new NotFoundException('Active location not found');
@@ -105,6 +108,23 @@ export class BatchesService {
       locationId: location.id,
       quantity: batch.quantity,
     });
+    await this.integrations.enqueue(manager, 'shipment.received', {
+      batchId: batch.id,
+      batchNumber: batch.batchNumber,
+      purchaseOrderId: purchaseOrder.id,
+      purchaseOrderReference: purchaseOrder.reference,
+      locationId: location.id,
+      quantity: batch.quantity,
+    });
+    if (purchaseOrder.status !== previousPurchaseOrderStatus) {
+      await this.integrations.enqueue(manager, 'purchase_order.status_changed', {
+        id: purchaseOrder.id,
+        reference: purchaseOrder.reference,
+        previousStatus: previousPurchaseOrderStatus,
+        status: purchaseOrder.status,
+        receivedQuantity: purchaseOrder.receivedQuantity,
+      });
+    }
     return batch;
   }
 
@@ -248,6 +268,13 @@ export class BatchesService {
         batch.currentLocationId = null;
         const updated = await manager.getRepository(Batch).save(batch);
         await this.audit.record(manager, actor, 'batch_dispatched', 'batch', batch.id, {
+          fromLocationId,
+          quantity: batch.quantity,
+        });
+        await this.integrations.enqueue(manager, 'shipment.dispatched', {
+          batchId: batch.id,
+          batchNumber: batch.batchNumber,
+          purchaseOrderId: batch.purchaseOrderId,
           fromLocationId,
           quantity: batch.quantity,
         });
