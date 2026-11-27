@@ -4,12 +4,15 @@ import {
   ExceptionFilter,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { QueryFailedError } from 'typeorm';
 
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(ApiExceptionFilter.name);
+
   catch(exception: unknown, host: ArgumentsHost): void {
     const context = host.switchToHttp();
     const response = context.getResponse<Response>();
@@ -41,7 +44,11 @@ export class ApiExceptionFilter implements ExceptionFilter {
           (typeof exceptionResponse === 'string' ? exceptionResponse : undefined);
 
     if (statusCode >= HttpStatus.INTERNAL_SERVER_ERROR) {
-      console.error(exception);
+      this.logger.error(
+        `Unhandled API error ${request.method} ${request.path}`,
+        exception instanceof Error ? exception.stack : undefined,
+        `requestId=${response.getHeader('X-Request-ID') ?? 'unknown'}`,
+      );
     }
 
     response.status(statusCode).json({

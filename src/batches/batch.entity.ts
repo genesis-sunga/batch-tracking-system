@@ -5,6 +5,7 @@ import { BatchStatus } from '../common/enums';
 @Index(['batchNumber'], { unique: true })
 @Index('IDX_batches_expiry', ['expiresAt'])
 @Index('IDX_batches_quarantine_reminder', ['status', 'updatedAt'])
+@Index('IDX_batches_location_status', ['currentLocationId', 'status'])
 export class Batch {
   @PrimaryGeneratedColumn()
   id: number;

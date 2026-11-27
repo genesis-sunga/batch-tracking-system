@@ -33,9 +33,11 @@ export class IdempotencyService {
           }
           return existing.response as T;
         }
-        await repository.insert({ scope, key, requestHash, response: null });
+        await repository.save(repository.create({ scope, key, requestHash, response: null }));
         const result = await operation(manager);
-        await repository.update({ scope, key }, { response: result });
+        const record = await repository.findOneByOrFail({ scope, key });
+        record.response = result;
+        await repository.save(record);
         return result;
       });
     } catch (error) {

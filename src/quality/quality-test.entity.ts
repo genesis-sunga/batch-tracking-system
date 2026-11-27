@@ -3,6 +3,7 @@ import { QualityOutcome } from '../common/enums';
 
 @Entity('quality_tests')
 @Index(['batchId', 'createdAt'])
+@Index('IDX_quality_tests_outcome_created_at', ['outcome', 'createdAt'])
 export class QualityTest {
   @PrimaryGeneratedColumn()
   id: number;

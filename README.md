@@ -44,6 +44,9 @@ All routes except login require `Authorization: Bearer <JWT>`. List endpoints ac
 | GET | `/api/purchase-orders/:id/trace` | Authenticated |
 | GET | `/api/locations/:id/batches` | Authenticated |
 | GET | `/api/audit-logs` | Admin (most recent 100 records) |
+| GET | `/api/reports/stock`, `/api/reports/expiry`, `/api/reports/quality`, `/api/reports/purchase-orders`, `/api/reports/movements` | Authenticated; `format=json`, `csv`, or `pdf` |
+| POST / GET | `/api/reports/jobs`, `/api/reports/jobs/:id` | Admin; asynchronous report jobs |
+| GET | `/api/health/live`, `/api/health/ready` | Public health probes |
 
 Batch creation, PO receiving, storage movements, and dispatch require an `Idempotency-Key` header (1–128 characters). Reusing a key with the same request returns the original response; reusing it for different input returns `409 Conflict`. Receive bodies contain `batchNumber`, `locationId`, `quantity`, optional `requiredTests`, and optional ISO-8601 `expiresAt`. Movement bodies use `movementType` values `transfer` (plus `toLocationId`), `consumption` (plus `quantity`), `hold`, or `release_hold`.
 
@@ -60,3 +63,11 @@ The outbox table is managed by the `CreateIntegrationOutbox1785200000000` migrat
 Set `SMTP_HOST` and `SMTP_FROM` to enable asynchronous email delivery. Configure `SMTP_PORT`, `SMTP_SECURE`, and optional `SMTP_USER`/`SMTP_PASSWORD` for the provider. Notifications are queued in the same transaction as the triggering change, then sent by a background worker; temporary delivery failures retry with exponential backoff and a circuit breaker. Messages use reusable escaped HTML and text templates. QA, warehouse, and admin roles receive failed-test and hold alerts; procurement/admin receive receipt notices; operations teams receive release/recall notices.
 
 The scheduled worker checks daily for batches expiring within `EXPIRY_REMINDER_DAYS` (default 7), including batches already past expiry, and quarantined batches that have remained in that state for at least 24 hours. Reminders are deduplicated per batch, recipient, and day. The `CreateNotificationOutbox1785201000000` migration adds the email outbox and nullable batch expiry date; apply it before enabling SMTP in production. With SMTP unset, notifications are not queued or sent.
+
+## Reports and production operations
+
+Report endpoints support `page` (default 1), `limit` (default 1,000; maximum 10,000), date filters (`from`, `to`), and report-specific filters. Use `format=csv` or `format=pdf` for downloads; JSON is the default. Stock, expiry, grouped quality outcomes, PO fulfillment, and movement/traceability reports are available. For larger reports, admins can submit `POST /api/reports/jobs` with a `reportType` (`stock`, `expiry`, `quality`, `purchase_orders`, or `movements`) and filters, then poll `/api/reports/jobs/:id`. Job results and failures are retained in the database.
+
+Production configuration rejects placeholder or short JWT secrets. Global IP-based rate limiting defaults to 100 requests per 60 seconds and can be changed with `RATE_LIMIT_LIMIT` and `RATE_LIMIT_WINDOW_SECONDS`; set `TRUST_PROXY_HOPS` only to the number of trusted reverse-proxy hops in front of the app. The in-memory limiter is per instance, so use shared storage or an edge gateway for multi-replica deployments. Helmet security headers are enabled. Logs are newline-delimited JSON with request IDs, route, status, and duration; send stdout/stderr to your approved log and error-tracking collector.
+
+The database backup script is [scripts/backup-mysql.ps1](./scripts/backup-mysql.ps1). Set database credentials and `DB_BACKUP_DIR`, then schedule it with Windows Task Scheduler. Store backups in access-controlled storage, encrypt off-host copies, define retention, and regularly test restores. Never commit production secrets or backup files. Apply the `CreateReportJobs1785202000000` migration together with earlier migrations before deploying the reporting feature.

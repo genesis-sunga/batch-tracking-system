@@ -16,14 +16,17 @@ export class AuditService {
     entityId: number,
     details: Record<string, unknown> | null = null,
   ): Promise<void> {
-    await manager.getRepository(AuditLog).insert({
-      actorId: actor.id,
-      actorEmail: actor.email,
-      action,
-      entityType,
-      entityId,
-      details,
-    });
+    const repository = manager.getRepository(AuditLog);
+    await repository.save(
+      repository.create({
+        actorId: actor.id,
+        actorEmail: actor.email,
+        action,
+        entityType,
+        entityId,
+        details,
+      }),
+    );
   }
 
   findRecent(): Promise<AuditLog[]> {

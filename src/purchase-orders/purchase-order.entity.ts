@@ -6,12 +6,14 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { PurchaseOrderStatus } from '../common/enums';
 import { Product } from '../products/product.entity';
 import { Supplier } from '../suppliers/supplier.entity';
 
 @Entity('purchase_orders')
+@Index('IDX_purchase_orders_status_created_at', ['status', 'createdAt'])
 export class PurchaseOrder {
   @PrimaryGeneratedColumn()
   id: number;

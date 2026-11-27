@@ -3,6 +3,7 @@ import { MovementType } from '../common/enums';
 
 @Entity('inventory_movements')
 @Index(['batchId', 'createdAt'])
+@Index('IDX_inventory_movements_created_at', ['createdAt'])
 export class InventoryMovement {
   @PrimaryGeneratedColumn()
   id: number;
