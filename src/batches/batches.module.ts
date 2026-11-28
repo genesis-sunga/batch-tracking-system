@@ -11,10 +11,11 @@ import { BatchesService } from './batches.service';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { InventoryMovement } from './inventory-movement.entity';
+import { Product } from '../products/product.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Batch, InventoryMovement, PurchaseOrder, Location, QualityTest]),
+    TypeOrmModule.forFeature([Batch, InventoryMovement, PurchaseOrder, Location, QualityTest, Product]),
     AuditModule,
     IntegrationsModule,
     NotificationsModule,

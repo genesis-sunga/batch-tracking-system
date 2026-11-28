@@ -44,6 +44,7 @@ import { validateEnvironment } from './config/env.validation';
         autoLoadEntities: true,
         synchronize: config.get<string>('NODE_ENV') !== 'production',
         migrations: [
+          __dirname + '/batches/migrations/*{.js,.ts}',
           __dirname + '/integrations/migrations/*{.js,.ts}',
           __dirname + '/notifications/migrations/*{.js,.ts}',
           __dirname + '/reports/migrations/*{.js,.ts}',

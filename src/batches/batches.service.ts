@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository, SelectQueryBuilder } from 'typeorm';
 import { AuditService } from '../common/audit/audit.service';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
 import { PaginatedResult, paginated } from '../common/dto/pagination.dto';
@@ -13,10 +13,13 @@ import { CreateBatchDto } from './dto/create-batch.dto';
 import { MoveBatchDto } from './dto/move-batch.dto';
 import { BatchQueryDto } from './dto/batch-query.dto';
 import { MovementQueryDto } from './dto/movement-query.dto';
+import { AdjustBatchDto } from './dto/adjust-batch.dto';
+import { UpdateBatchDto } from './dto/update-batch.dto';
 import { Batch } from './batch.entity';
 import { InventoryMovement } from './inventory-movement.entity';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { Product } from '../products/product.entity';
 
 @Injectable()
 export class BatchesService {
@@ -33,6 +36,7 @@ export class BatchesService {
     @InjectRepository(Location) private readonly locations: Repository<Location>,
     @InjectRepository(QualityTest)
     private readonly qualityTests: Repository<QualityTest>,
+    @InjectRepository(Product) private readonly products: Repository<Product>,
   ) {}
 
   create(input: CreateBatchDto, actor: AuthenticatedUser, key?: string): Promise<Batch> {
@@ -155,6 +159,131 @@ export class BatchesService {
       key,
       { actorId: actor.id, payload: input },
       (manager) => this.applyMovement(manager, id, input, actor),
+    );
+  }
+
+  async update(id: number, input: UpdateBatchDto, actor: AuthenticatedUser): Promise<Batch> {
+    if (input.expiresAt === undefined && input.status === undefined) {
+      throw new BadRequestException('At least one batch field must be provided');
+    }
+
+    return this.batches.manager.transaction(async (manager) => {
+      const repository = manager.getRepository(Batch);
+      const batch = await repository.findOne({ where: { id }, lock: { mode: 'pessimistic_write' } });
+      if (!batch) throw new NotFoundException('Batch not found');
+      const previousStatus = batch.status;
+
+      if (input.status === BatchStatus.RELEASED && batch.status !== BatchStatus.RELEASED) {
+        if (
+          [BatchStatus.DISPATCHED, BatchStatus.REJECTED, BatchStatus.CONSUMED, BatchStatus.ON_HOLD].includes(
+            batch.status,
+          )
+        ) {
+          throw new BadRequestException('This batch cannot be released from its current status');
+        }
+        const tests = await manager.getRepository(QualityTest).find({
+          where: { batchId: batch.id },
+          order: { createdAt: 'DESC', id: 'DESC' },
+        });
+        const latestByType = new Map<string, QualityTest>();
+        for (const test of tests) {
+          if (!latestByType.has(test.testType)) latestByType.set(test.testType, test);
+        }
+        if (
+          latestByType.size < batch.requiredTests ||
+          [...latestByType.values()].some((test) => test.outcome !== 'pass')
+        ) {
+          throw new BadRequestException('All required quality tests must pass before releasing this batch');
+        }
+        batch.status = BatchStatus.RELEASED;
+      }
+
+      if (input.expiresAt !== undefined) {
+        batch.expiresAt = input.expiresAt === null ? null : new Date(input.expiresAt);
+      }
+      const updated = await repository.save(batch);
+      await this.audit.record(manager, actor, 'batch_updated', 'batch', batch.id, {
+        expiresAt: updated.expiresAt,
+        previousStatus,
+        status: updated.status,
+      });
+      if (previousStatus !== BatchStatus.RELEASED && updated.status === BatchStatus.RELEASED) {
+        await this.notifications.notifyRoles(
+          manager,
+          [UserRole.ADMIN, UserRole.PROCUREMENT, UserRole.WAREHOUSE_OPERATOR],
+          'batch_released',
+          {
+            batchNumber: updated.batchNumber,
+            quantity: updated.quantity,
+            status: updated.status,
+          },
+          `batch-released:${updated.id}:manual`,
+        );
+        await this.integrations.enqueue(manager, 'batch.released', {
+          batchId: updated.id,
+          previousStatus,
+          status: updated.status,
+        });
+      }
+      return updated;
+    });
+  }
+
+  adjust(
+    id: number,
+    input: AdjustBatchDto,
+    actor: AuthenticatedUser,
+    key?: string,
+  ): Promise<Batch> {
+    return this.idempotency.execute(
+      `batch-adjustment-${id}`,
+      key,
+      { actorId: actor.id, payload: input },
+      async (manager) => {
+        const repository = manager.getRepository(Batch);
+        const batch = await repository.findOne({
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!batch) throw new NotFoundException('Batch not found');
+        if (
+          [BatchStatus.DISPATCHED, BatchStatus.REJECTED, BatchStatus.CONSUMED].includes(batch.status)
+        ) {
+          throw new BadRequestException('This batch no longer supports stock adjustments');
+        }
+        if (batch.currentLocationId === null) {
+          throw new BadRequestException('A batch must have a current location to adjust its stock');
+        }
+
+        const previousQuantity = batch.quantity;
+        const discrepancy = input.countedQuantity - previousQuantity;
+        batch.quantity = input.countedQuantity;
+        const locationId = batch.currentLocationId;
+        await manager.getRepository(InventoryMovement).insert({
+          batchId: batch.id,
+          fromLocationId: discrepancy < 0 ? locationId : discrepancy === 0 ? locationId : null,
+          toLocationId: discrepancy > 0 ? locationId : discrepancy === 0 ? locationId : null,
+          quantity: Math.abs(discrepancy),
+          movementType: MovementType.ADJUSTMENT,
+          actorId: actor.id,
+        });
+        const updated = await repository.save(batch);
+        await this.audit.record(manager, actor, 'batch_stock_adjusted', 'batch', batch.id, {
+          previousQuantity,
+          countedQuantity: input.countedQuantity,
+          discrepancy,
+          reason: input.reason ?? null,
+          locationId,
+        });
+        await this.integrations.enqueue(manager, 'batch.stock_adjusted', {
+          batchId: batch.id,
+          previousQuantity,
+          countedQuantity: input.countedQuantity,
+          discrepancy,
+          locationId,
+        });
+        return updated;
+      },
     );
   }
 
@@ -393,6 +522,53 @@ export class BatchesService {
     return this.traceBatch(batch.id);
   }
 
+  async traceProductBySku(sku: string): Promise<Record<string, unknown>> {
+    const product = await this.products.findOneBy({ sku });
+    if (!product) throw new NotFoundException('Product not found');
+    const purchaseOrders = await this.purchaseOrders.find({
+      where: { productId: product.id },
+      relations: { supplier: true, product: true },
+      order: { createdAt: 'ASC' },
+    });
+    const purchaseOrderIds = purchaseOrders.map((purchaseOrder) => purchaseOrder.id);
+    if (purchaseOrderIds.length === 0) {
+      return { product, purchaseOrders, batches: [] };
+    }
+    const batches = await this.batches.find({
+      where: { purchaseOrderId: In(purchaseOrderIds) },
+      order: { createdAt: 'ASC' },
+    });
+    const batchIds = batches.map((batch) => batch.id);
+    const [qualityTests, movements] = batchIds.length
+      ? await Promise.all([
+          this.qualityTests.find({
+            where: { batchId: In(batchIds) },
+            order: { createdAt: 'ASC' },
+          }),
+          this.movements.find({
+            where: { batchId: In(batchIds) },
+            order: { createdAt: 'ASC' },
+          }),
+        ])
+      : [[], []];
+    const locationIds = batches
+      .map((batch) => batch.currentLocationId)
+      .filter((locationId): locationId is number => locationId !== null);
+    const locations = locationIds.length
+      ? await this.locations.find({ where: { id: In(locationIds) } })
+      : [];
+    return {
+      product,
+      purchaseOrders,
+      batches: batches.map((batch) => ({
+        ...batch,
+        currentLocation: locations.find((location) => location.id === batch.currentLocationId) ?? null,
+        qualityTests: qualityTests.filter((test) => test.batchId === batch.id),
+        movements: movements.filter((movement) => movement.batchId === batch.id),
+      })),
+    };
+  }
+
   async findMovements(
     id: number,
     query: MovementQueryDto,
@@ -401,20 +577,57 @@ export class BatchesService {
     const builder = this.movements
       .createQueryBuilder('movement')
       .where('movement.batchId = :id', { id });
-    if (query.movementType) {
-      builder.andWhere('movement.movementType = :movementType', {
-        movementType: query.movementType,
-      });
-    }
-    if (query.search) {
-      builder.andWhere('movement.movementType LIKE :search', { search: `%${query.search}%` });
-    }
+    this.applyMovementFilters(builder, query);
     const [data, total] = await builder
       .orderBy('movement.createdAt', 'ASC')
       .skip((query.page - 1) * query.limit)
       .take(query.limit)
       .getManyAndCount();
     return paginated(data, total, query.page, query.limit);
+  }
+
+  async findAllMovements(query: MovementQueryDto): Promise<PaginatedResult<InventoryMovement>> {
+    const builder = this.movements.createQueryBuilder('movement').where('1 = 1');
+    if (query.batchId) {
+      builder.andWhere('movement.batchId = :batchId', { batchId: query.batchId });
+    }
+    this.applyMovementFilters(builder, query);
+    const [data, total] = await builder
+      .orderBy('movement.createdAt', 'DESC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getManyAndCount();
+    return paginated(data, total, query.page, query.limit);
+  }
+
+  private applyMovementFilters(
+    builder: SelectQueryBuilder<InventoryMovement>,
+    query: MovementQueryDto,
+  ): void {
+    if (query.movementType) {
+      builder.andWhere('movement.movementType = :movementType', {
+        movementType: query.movementType,
+      });
+    }
+    if (query.locationId) {
+      builder.andWhere(
+        '(movement.fromLocationId = :locationId OR movement.toLocationId = :locationId)',
+        { locationId: query.locationId },
+      );
+    }
+    if (query.search) {
+      builder.andWhere('movement.movementType LIKE :search', { search: `%${query.search}%` });
+    }
+    const from = query.from ? new Date(query.from) : undefined;
+    const to = query.to ? new Date(query.to) : undefined;
+    if (to && /^\d{4}-\d{2}-\d{2}$/.test(query.to ?? '')) {
+      to.setUTCHours(23, 59, 59, 999);
+    }
+    if (from && to && from > to) {
+      throw new BadRequestException('"from" must be earlier than or equal to "to"');
+    }
+    if (from) builder.andWhere('movement.createdAt >= :from', { from });
+    if (to) builder.andWhere('movement.createdAt <= :to', { to });
   }
 
   async tracePurchaseOrder(id: number): Promise<Record<string, unknown>> {

@@ -45,9 +45,45 @@ export class ReportsService {
       .andWhere('batch.currentLocationId IS NOT NULL');
     if (query.locationId) builder.andWhere('batch.currentLocationId = :locationId', { locationId: query.locationId });
     if (query.batchStatus) builder.andWhere('batch.status = :status', { status: query.batchStatus });
+    if (query.sku) builder.andWhere('product.sku = :sku', { sku: query.sku });
     this.applyDateRange(builder, query, 'batch.createdAt');
     return builder
       .orderBy('batch.batchNumber', 'ASC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getRawMany<ReportRow>();
+  }
+
+  async batchRecords(query: ReportQueryDto): Promise<ReportRow[]> {
+    const builder = this.batches
+      .createQueryBuilder('batch')
+      .leftJoin('locations', 'location', 'location.id = batch.currentLocationId')
+      .leftJoin('purchase_orders', 'po', 'po.id = batch.purchaseOrderId')
+      .leftJoin('products', 'product', 'product.id = po.productId')
+      .select([
+        'batch.id AS batchId',
+        'batch.batchNumber AS batchNumber',
+        'batch.quantity AS quantity',
+        'batch.requiredTests AS requiredTests',
+        'batch.status AS status',
+        'batch.expiresAt AS expiresAt',
+        'batch.currentLocationId AS locationId',
+        'location.code AS locationCode',
+        'location.name AS locationName',
+        'po.reference AS purchaseOrderReference',
+        'product.sku AS sku',
+        'product.name AS productName',
+        'batch.createdAt AS createdAt',
+      ])
+      .where('1 = 1');
+    if (query.locationId) {
+      builder.andWhere('batch.currentLocationId = :locationId', { locationId: query.locationId });
+    }
+    if (query.batchStatus) builder.andWhere('batch.status = :status', { status: query.batchStatus });
+    if (query.sku) builder.andWhere('product.sku = :sku', { sku: query.sku });
+    this.applyDateRange(builder, query, 'batch.createdAt');
+    return builder
+      .orderBy('batch.createdAt', 'DESC')
       .skip((query.page - 1) * query.limit)
       .take(query.limit)
       .getRawMany<ReportRow>();
@@ -102,6 +138,36 @@ export class ReportsService {
       .getRawMany<ReportRow>();
   }
 
+  async qualityTests(query: ReportQueryDto): Promise<ReportRow[]> {
+    const builder = this.tests
+      .createQueryBuilder('test')
+      .leftJoin('batches', 'batch', 'batch.id = test.batchId')
+      .leftJoin('purchase_orders', 'po', 'po.id = batch.purchaseOrderId')
+      .leftJoin('products', 'product', 'product.id = po.productId')
+      .select([
+        'test.id AS testId',
+        'test.batchId AS batchId',
+        'batch.batchNumber AS batchNumber',
+        'product.sku AS sku',
+        'test.testType AS testType',
+        'test.outcome AS outcome',
+        'test.notes AS notes',
+        'test.inspectorId AS inspectorId',
+        'test.createdAt AS createdAt',
+      ])
+      .where('1 = 1');
+    if (query.batchId) builder.andWhere('test.batchId = :batchId', { batchId: query.batchId });
+    if (query.outcome) builder.andWhere('test.outcome = :outcome', { outcome: query.outcome });
+    if (query.testType) builder.andWhere('test.testType = :testType', { testType: query.testType });
+    if (query.sku) builder.andWhere('product.sku = :sku', { sku: query.sku });
+    this.applyDateRange(builder, query, 'test.createdAt');
+    return builder
+      .orderBy('test.createdAt', 'ASC')
+      .skip((query.page - 1) * query.limit)
+      .take(query.limit)
+      .getRawMany<ReportRow>();
+  }
+
   async purchaseOrderFulfillment(query: ReportQueryDto): Promise<ReportRow[]> {
     const builder = this.purchaseOrders
       .createQueryBuilder('po')
@@ -146,6 +212,12 @@ export class ReportsService {
         'movement.actorId AS actorId',
       ]);
     if (query.batchId) builder.andWhere('movement.batchId = :batchId', { batchId: query.batchId });
+    if (query.locationId) {
+      builder.andWhere(
+        '(movement.fromLocationId = :locationId OR movement.toLocationId = :locationId)',
+        { locationId: query.locationId },
+      );
+    }
     if (query.movementType) {
       builder.andWhere('movement.movementType = :movementType', {
         movementType: query.movementType,
@@ -163,10 +235,14 @@ export class ReportsService {
     switch (type) {
       case ReportType.STOCK:
         return this.stock(query);
+      case ReportType.BATCHES:
+        return this.batchRecords(query);
       case ReportType.EXPIRY:
         return this.expiry(query);
       case ReportType.QUALITY:
         return this.quality(query);
+      case ReportType.QUALITY_TESTS:
+        return this.qualityTests(query);
       case ReportType.PURCHASE_ORDERS:
         return this.purchaseOrderFulfillment(query);
       case ReportType.MOVEMENTS:

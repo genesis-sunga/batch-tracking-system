@@ -34,6 +34,17 @@ export class ReportsController {
     );
   }
 
+  @Get('batches')
+  async batches(@Query() query: ReportQueryDto, @Res() response: Response): Promise<void> {
+    exportReport(
+      response,
+      'batch-report',
+      'Batch inventory report',
+      await this.reports.batchRecords(query),
+      query.format,
+    );
+  }
+
   @Get('expiry')
   async expiry(@Query() query: ReportQueryDto, @Res() response: Response): Promise<void> {
     exportReport(
@@ -52,6 +63,17 @@ export class ReportsController {
       'quality-report',
       'Quality test summary',
       await this.reports.quality(query),
+      query.format,
+    );
+  }
+
+  @Get('quality-tests')
+  async qualityTests(@Query() query: ReportQueryDto, @Res() response: Response): Promise<void> {
+    exportReport(
+      response,
+      'quality-test-report',
+      'Quality inspection records',
+      await this.reports.qualityTests(query),
       query.format,
     );
   }

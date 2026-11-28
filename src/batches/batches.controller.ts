@@ -4,6 +4,7 @@ import {
   Get,
   Headers,
   Param,
+  Patch,
   ParseIntPipe,
   Post,
   Query,
@@ -21,6 +22,8 @@ import { MoveBatchDto } from './dto/move-batch.dto';
 import { BatchQueryDto } from './dto/batch-query.dto';
 import { ReceiveBatchDto } from './dto/receive-batch.dto';
 import { MovementQueryDto } from './dto/movement-query.dto';
+import { UpdateBatchDto } from './dto/update-batch.dto';
+import { AdjustBatchDto } from './dto/adjust-batch.dto';
 
 @Controller()
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -47,6 +50,16 @@ export class BatchesController {
     return this.batches.findOne(id);
   }
 
+  @Patch('batches/:id')
+  @Roles(UserRole.ADMIN, UserRole.QA_INSPECTOR)
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() input: UpdateBatchDto,
+    @CurrentUser() actor: AuthenticatedUser,
+  ): Promise<Batch> {
+    return this.batches.update(id, input, actor);
+  }
+
   @Get('batches/code/:code')
   findByCode(@Param('code') code: string): Promise<Batch> {
     return this.batches.findByCode(code);
@@ -61,6 +74,17 @@ export class BatchesController {
     @Headers('idempotency-key') key?: string,
   ): Promise<Batch> {
     return this.batches.move(id, input, actor, key);
+  }
+
+  @Post('batches/:id/adjustments')
+  @Roles(UserRole.ADMIN, UserRole.WAREHOUSE_OPERATOR)
+  adjust(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() input: AdjustBatchDto,
+    @CurrentUser() actor: AuthenticatedUser,
+    @Headers('idempotency-key') key?: string,
+  ): Promise<Batch> {
+    return this.batches.adjust(id, input, actor, key);
   }
 
   @Post('batches/:id/dispatch')
@@ -81,6 +105,11 @@ export class BatchesController {
     return this.batches.findMovements(id, query);
   }
 
+  @Get('storage-movements')
+  allMovements(@Query() query: MovementQueryDto) {
+    return this.batches.findAllMovements(query);
+  }
+
   @Post('purchase-orders/:id/receive')
   @Roles(UserRole.ADMIN, UserRole.WAREHOUSE_OPERATOR, UserRole.PROCUREMENT)
   receive(
@@ -95,6 +124,11 @@ export class BatchesController {
   @Get('batches/code/:code/trace')
   traceBatchByCode(@Param('code') code: string): Promise<Record<string, unknown>> {
     return this.batches.traceBatchByCode(code);
+  }
+
+  @Get('products/sku/:sku/trace')
+  traceProductBySku(@Param('sku') sku: string): Promise<Record<string, unknown>> {
+    return this.batches.traceProductBySku(sku);
   }
 
   @Get('batches/:id/trace')

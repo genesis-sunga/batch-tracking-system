@@ -32,4 +32,12 @@ export class QualityController {
   ) {
     return this.quality.findForBatch(id, query);
   }
+
+  @Get(':testId')
+  findOne(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('testId', ParseIntPipe) testId: number,
+  ): Promise<QualityTest> {
+    return this.quality.findOne(id, testId);
+  }
 }

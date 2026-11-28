@@ -28,6 +28,7 @@ export enum MovementType {
   HOLD = 'hold',
   RELEASE_HOLD = 'release_hold',
   DISPATCH = 'dispatch',
+  ADJUSTMENT = 'adjustment',
 }
 
 export enum PurchaseOrderStatus {

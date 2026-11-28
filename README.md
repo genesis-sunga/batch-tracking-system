@@ -36,19 +36,24 @@ All routes except login require `Authorization: Bearer <JWT>`. List endpoints ac
 | GET / POST | `/api/locations` | Authenticated read; admin/warehouse operator create |
 | GET / POST | `/api/batches` | Authenticated read; admin/warehouse operator create |
 | GET | `/api/batches/:id` or `/api/batches/code/:code` | Authenticated |
+| PATCH | `/api/batches/:id` | Admin/QA; update expiry or release after required tests pass |
 | POST | `/api/batches/:id/storage-movements` | Admin/warehouse operator |
+| POST | `/api/batches/:id/adjustments` | Admin/warehouse; cycle-count stock adjustment |
 | GET | `/api/batches/:id/movements` | Authenticated |
+| GET | `/api/storage-movements` | Authenticated; filter by batch, location, movement type, and date |
 | POST | `/api/batches/:id/dispatch` | Admin/warehouse operator; batch must be released |
 | POST / GET | `/api/batches/:id/quality-tests` | Admin/QA inspector to submit; authenticated users to list |
+| GET | `/api/batches/:id/quality-tests/:testId` | Authenticated |
 | GET | `/api/batches/:id/trace` or `/api/batches/code/:code/trace` | Authenticated |
+| GET | `/api/products/sku/:sku/trace` | Authenticated; SKU genealogy with batches, tests, and movements |
 | GET | `/api/purchase-orders/:id/trace` | Authenticated |
 | GET | `/api/locations/:id/batches` | Authenticated |
 | GET | `/api/audit-logs` | Admin (most recent 100 records) |
-| GET | `/api/reports/stock`, `/api/reports/expiry`, `/api/reports/quality`, `/api/reports/purchase-orders`, `/api/reports/movements` | Authenticated; `format=json`, `csv`, or `pdf` |
+| GET | `/api/reports/stock`, `/api/reports/batches`, `/api/reports/expiry`, `/api/reports/quality`, `/api/reports/quality-tests`, `/api/reports/purchase-orders`, `/api/reports/movements` | Authenticated; `format=json`, `csv`, or `pdf`; date filters `from`/`to` |
 | POST / GET | `/api/reports/jobs`, `/api/reports/jobs/:id` | Admin; asynchronous report jobs |
 | GET | `/api/health/live`, `/api/health/ready` | Public health probes |
 
-Batch creation, PO receiving, storage movements, and dispatch require an `Idempotency-Key` header (1–128 characters). Reusing a key with the same request returns the original response; reusing it for different input returns `409 Conflict`. Receive bodies contain `batchNumber`, `locationId`, `quantity`, optional `requiredTests`, and optional ISO-8601 `expiresAt`. Movement bodies use `movementType` values `transfer` (plus `toLocationId`), `consumption` (plus `quantity`), `hold`, or `release_hold`.
+Batch creation, PO receiving, storage movements, stock adjustments, and dispatch require an `Idempotency-Key` header (1–128 characters). Reusing a key with the same request returns the original response; reusing it for different input returns `409 Conflict`. Receive bodies contain `batchNumber`, `locationId`, `quantity`, optional `requiredTests`, and optional ISO-8601 `expiresAt`. Movement bodies use `movementType` values `transfer` (plus `toLocationId`), `consumption` (plus `quantity`), `hold`, or `release_hold`. Adjustment bodies contain the physical `countedQuantity` and optional `reason`; the adjustment and its audit/movement records are committed together. `PATCH /api/batches/:id` accepts an ISO-8601 `expiresAt` (or `null` to clear it), and `status: "released"` only when all required latest quality results pass.
 
 Operations remain in services and use atomic TypeORM transactions. Receipt updates the PO's received quantity and creates the batch and movement together. Consumption cannot exceed available stock; only released stock can be consumed or dispatched. Quality `fail` quarantines a batch, `reject` marks it rejected, and passing the required distinct test types releases it. Master-data references cannot be deleted while used by purchase orders.
 
@@ -66,7 +71,9 @@ The scheduled worker checks daily for batches expiring within `EXPIRY_REMINDER_D
 
 ## Reports and production operations
 
-Report endpoints support `page` (default 1), `limit` (default 1,000; maximum 10,000), date filters (`from`, `to`), and report-specific filters. Use `format=csv` or `format=pdf` for downloads; JSON is the default. Stock, expiry, grouped quality outcomes, PO fulfillment, and movement/traceability reports are available. For larger reports, admins can submit `POST /api/reports/jobs` with a `reportType` (`stock`, `expiry`, `quality`, `purchase_orders`, or `movements`) and filters, then poll `/api/reports/jobs/:id`. Job results and failures are retained in the database.
+Report endpoints support `page` (default 1), `limit` (default 1,000; maximum 10,000), date filters (`from`, `to`), and report-specific filters including SKU, location, and batch. Use `format=csv` or `format=pdf` for downloads; JSON is the default. Stock, batch, expiry, grouped quality outcomes, detailed quality inspections, PO fulfillment, and movement/traceability reports are available. For larger reports, admins can submit `POST /api/reports/jobs` with a `reportType` (`stock`, `batches`, `expiry`, `quality`, `quality_tests`, `purchase_orders`, or `movements`) and filters, then poll `/api/reports/jobs/:id`. Job results and failures are retained in the database.
+
+The `AddInventoryAdjustments1785203000000` migration adds the stock-adjustment movement type. Apply this migration in production before using the adjustment endpoint; development schema synchronization includes it automatically.
 
 Production configuration rejects placeholder or short JWT secrets. Global IP-based rate limiting defaults to 100 requests per 60 seconds and can be changed with `RATE_LIMIT_LIMIT` and `RATE_LIMIT_WINDOW_SECONDS`; set `TRUST_PROXY_HOPS` only to the number of trusted reverse-proxy hops in front of the app. The in-memory limiter is per instance, so use shared storage or an edge gateway for multi-replica deployments. Helmet security headers are enabled. Logs are newline-delimited JSON with request IDs, route, status, and duration; send stdout/stderr to your approved log and error-tracking collector.
 

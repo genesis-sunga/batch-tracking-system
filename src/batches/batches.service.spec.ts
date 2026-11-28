@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { BadRequestException } from '@nestjs/common';
 import { EntityManager, Repository } from 'typeorm';
 import { AuthenticatedUser } from '../common/decorators/current-user.decorator';
-import { MovementType, UserRole } from '../common/enums';
+import { BatchStatus, MovementType, QualityOutcome, UserRole } from '../common/enums';
 import { AuditService } from '../common/audit/audit.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { IntegrationsService } from '../integrations/integrations.service';
@@ -10,6 +10,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { Location } from '../locations/location.entity';
 import { PurchaseOrder } from '../purchase-orders/purchase-order.entity';
 import { QualityTest } from '../quality/quality-test.entity';
+import { Product } from '../products/product.entity';
 import { Batch } from './batch.entity';
 import { BatchesService } from './batches.service';
 import { InventoryMovement } from './inventory-movement.entity';
@@ -17,8 +18,9 @@ import { InventoryMovement } from './inventory-movement.entity';
 describe('BatchesService transactional movements', () => {
   const actor: AuthenticatedUser = { id: 8, email: 'operator@example.com', role: UserRole.WAREHOUSE_OPERATOR };
   let batch: Batch;
-  let batchRepository: { findOne: jest.Mock; save: jest.Mock };
+  let batchRepository: { findOne: jest.Mock; save: jest.Mock; manager?: { transaction: jest.Mock } };
   let movementRepository: { insert: jest.Mock };
+  let qualityTestRepository: { find: jest.Mock };
   let manager: { getRepository: jest.Mock };
   let service: BatchesService;
 
@@ -35,9 +37,24 @@ describe('BatchesService transactional movements', () => {
       save: jest.fn(async (value: Batch) => value),
     };
     movementRepository = { insert: jest.fn().mockResolvedValue(undefined) };
+    qualityTestRepository = {
+      find: jest.fn().mockResolvedValue([
+        { testType: 'microbiology', outcome: QualityOutcome.PASS } as QualityTest,
+      ]),
+    };
     manager = {
       getRepository: jest.fn((entity: unknown) =>
-        entity === Batch ? batchRepository : movementRepository,
+        entity === Batch
+          ? batchRepository
+          : entity === InventoryMovement
+            ? movementRepository
+            : qualityTestRepository,
+      ),
+    };
+    batchRepository.manager = {
+      transaction: jest.fn(
+        async (operation: (transactionManager: typeof manager) => Promise<Batch>) =>
+          operation(manager),
       ),
     };
     const idempotency = {
@@ -60,6 +77,7 @@ describe('BatchesService transactional movements', () => {
       {} as Repository<PurchaseOrder>,
       {} as Repository<Location>,
       {} as Repository<QualityTest>,
+      {} as Repository<Product>,
     );
   });
 
@@ -89,6 +107,48 @@ describe('BatchesService transactional movements', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(movementRepository.insert).not.toHaveBeenCalled();
+    expect(batchRepository.save).not.toHaveBeenCalled();
+  });
+
+  it('records a cycle-count discrepancy and updates the batch quantity atomically', async () => {
+    const updated = await service.adjust(
+      batch.id,
+      { countedQuantity: 7, reason: 'Cycle count' },
+      actor,
+      'adjustment-1',
+    );
+
+    expect(updated.quantity).toBe(7);
+    expect(movementRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        batchId: batch.id,
+        fromLocationId: 2,
+        toLocationId: null,
+        quantity: 3,
+        movementType: MovementType.ADJUSTMENT,
+      }),
+    );
+    expect(batchRepository.save).toHaveBeenCalledWith(expect.objectContaining({ quantity: 7 }));
+  });
+
+  it('only manually releases a batch after all required quality tests pass', async () => {
+    batch.status = BatchStatus.AWAITING_QA;
+    batch.requiredTests = 1;
+
+    await expect(
+      service.update(batch.id, { status: BatchStatus.RELEASED }, actor),
+    ).resolves.toMatchObject({ status: BatchStatus.RELEASED });
+    expect(batchRepository.save).toHaveBeenCalledWith(
+      expect.objectContaining({ status: BatchStatus.RELEASED }),
+    );
+
+    batch.status = BatchStatus.AWAITING_QA;
+    qualityTestRepository.find.mockResolvedValue([]);
+    batchRepository.save.mockClear();
+
+    await expect(
+      service.update(batch.id, { status: BatchStatus.RELEASED }, actor),
+    ).rejects.toBeInstanceOf(BadRequestException);
     expect(batchRepository.save).not.toHaveBeenCalled();
   });
 });

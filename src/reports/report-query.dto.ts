@@ -19,8 +19,10 @@ export enum ReportFormat {
 
 export enum ReportType {
   STOCK = 'stock',
+  BATCHES = 'batches',
   EXPIRY = 'expiry',
   QUALITY = 'quality',
+  QUALITY_TESTS = 'quality_tests',
   PURCHASE_ORDERS = 'purchase_orders',
   MOVEMENTS = 'movements',
 }
@@ -67,6 +69,11 @@ export class ReportQueryDto {
   @IsInt()
   @Min(1)
   batchId?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  sku?: string;
 
   @IsOptional()
   @IsEnum(BatchStatus)

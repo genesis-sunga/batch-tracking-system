@@ -172,4 +172,10 @@ export class QualityService {
       .getManyAndCount();
     return paginated(data, total, query.page, query.limit);
   }
+
+  async findOne(batchId: number, testId: number): Promise<QualityTest> {
+    const test = await this.qualityTests.findOneBy({ id: testId, batchId });
+    if (!test) throw new NotFoundException('Quality test not found');
+    return test;
+  }
 }

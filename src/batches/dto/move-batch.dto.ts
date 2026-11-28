@@ -1,8 +1,13 @@
-import { IsEnum, IsInt, IsOptional, Min, ValidateIf } from 'class-validator';
+import { IsIn, IsInt, IsOptional, Min, ValidateIf } from 'class-validator';
 import { MovementType } from '../../common/enums';
 
 export class MoveBatchDto {
-  @IsEnum(MovementType)
+  @IsIn([
+    MovementType.TRANSFER,
+    MovementType.CONSUMPTION,
+    MovementType.HOLD,
+    MovementType.RELEASE_HOLD,
+  ])
   movementType: MovementType;
 
   @ValidateIf((input: MoveBatchDto) => input.movementType === MovementType.TRANSFER)
