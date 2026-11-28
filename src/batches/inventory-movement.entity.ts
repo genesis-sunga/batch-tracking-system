@@ -11,10 +11,10 @@ export class InventoryMovement {
   @Column()
   batchId: number;
 
-  @Column({ nullable: true })
+  @Column({ type: 'int', nullable: true })
   fromLocationId: number | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'int', nullable: true })
   toLocationId: number | null;
 
   @Column({ type: 'int', unsigned: true })

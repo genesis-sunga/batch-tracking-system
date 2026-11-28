@@ -28,7 +28,7 @@ export class Batch {
   @Column({ type: 'enum', enum: BatchStatus, nullable: true })
   statusBeforeHold: BatchStatus | null;
 
-  @Column({ nullable: true })
+  @Column({ type: 'int', nullable: true })
   currentLocationId: number | null;
 
   @Column({ type: 'datetime', nullable: true })

@@ -23,7 +23,7 @@ export class CreateReportJobs1785202000000 implements MigrationInterface {
     await queryRunner.query(`
       CREATE TABLE \`report_jobs\` (
         \`id\` int NOT NULL AUTO_INCREMENT,
-        \`reportType\` enum('stock','expiry','quality','purchase_orders','movements') NOT NULL,
+        \`reportType\` enum('stock','batches','expiry','quality','quality_tests','purchase_orders','movements') NOT NULL,
         \`filters\` json NOT NULL,
         \`status\` enum('pending','running','completed','failed') NOT NULL DEFAULT 'pending',
         \`result\` json NULL,

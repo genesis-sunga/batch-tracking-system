@@ -1,26 +1,25 @@
-# Batch Tracking API
+Batch Tracking API
 
 NestJS REST API using TypeORM and MySQL. Modules are separated by domain: authentication/users, purchase orders, inventory/batches, locations, quality, and audit logging.
 
-## Run locally
+Run locally
 
-1. Create a MySQL database and copy `.env.example` to `.env`.
-2. Set database credentials and a long random `JWT_SECRET`.
+1. Create a dedicated MySQL/MariaDB database named `batch_tracking_api` (for example, `CREATE DATABASE batch_tracking_api CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`). Keep any separately imported legacy database intact.
+2. Copy `.env.example` to `.env`, set database credentials and a long random `JWT_SECRET`, and keep `DB_DATABASE=batch_tracking_api` for the API schema.
 3. Install dependencies with `npm install`.
-4. Run `npm run start:dev`.
+4. Run `npm run start:dev`. With `DB_MIGRATIONS_RUN=true`, TypeORM applies the API migrations at startup.
 
-The application synchronizes the TypeORM schema outside production for local development. Production must use reviewed TypeORM migrations (`synchronize` is disabled when `NODE_ENV=production`).
+The API database schema is managed by TypeORM migrations; automatic schema synchronization is disabled. The supplied `batch_tracking_db.sql` schema uses different table and column names and a different data model, so it should not be imported into `batch_tracking_api` as-is. The dump contains table definitions but no data rows to migrate.
 
-## Initial administrator
+Initial administrator
 
 Set `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD` in the environment (password must be at least 12 characters), then run `npm run seed:admin`. The command refuses to add an administrator if the users table already contains records. Administrators can create other accounts with `POST /api/users`; public user registration is intentionally not exposed.
 
-## API outline
+API outline
 
 All routes except login require `Authorization: Bearer <JWT>`. List endpoints accept `page` (default 1), `limit` (default 20, maximum 100), and supported filter parameters; they return `{ "data": [], "meta": { "page": 1, "limit": 20, "total": 0, "totalPages": 0 } }`. Errors use `{ "statusCode", "error", "message", "path", "timestamp" }`.
 
 | Method | Route | Access |
-| --- | --- | --- |
 | POST | `/api/auth/login` | Public |
 | POST | `/api/users` | Admin |
 | GET / POST | `/api/products` | Authenticated read; admin/procurement write |

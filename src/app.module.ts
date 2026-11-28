@@ -42,7 +42,7 @@ import { validateEnvironment } from './config/env.validation';
         password: config.getOrThrow<string>('DB_PASSWORD'),
         database: config.getOrThrow<string>('DB_DATABASE'),
         autoLoadEntities: true,
-        synchronize: config.get<string>('NODE_ENV') !== 'production',
+        synchronize: false,
         migrations: [
           __dirname + '/batches/migrations/*{.js,.ts}',
           __dirname + '/integrations/migrations/*{.js,.ts}',
